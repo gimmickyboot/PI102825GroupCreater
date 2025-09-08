@@ -4,7 +4,7 @@
 # pi102825_group_creater.sh - script to create static groups of devices for PI102825
 # Shannon Pasto <shannon.pasto@jamf.com>
 #
-# v1.0 (08/09/2025)
+# v1.1 (08/09/2025)
 ###################
 ## uncomment the next line to output debugging to stdout
 #set -x
@@ -16,7 +16,7 @@ ME=$(basename "$0")
 # shellcheck disable=SC2034
 BINPATH=$(dirname "$0")
 logFile="${HOME}/Library/Logs/$(basename "${ME}" .sh).log"
-grpSize=100
+grpSize=100  # must not be greater than 100
 
 ###############################################################################
 ## function declarations
@@ -129,11 +129,10 @@ convertRaw() {
 
 ###############################################################################
 ## start the script here
-trap destroyToken EXIT
+# trap destroyToken EXIT
 
 # check that we have enough args
 if [ $# -ne 0 ]; then
-  authSuccess=1
   theGroupName="$1"
   if [ $# -eq 2 ]; then
     jssURL=$2
@@ -147,7 +146,9 @@ Create static groups, enough for ${grpSize} Macs per group
 
   usage: ${ME} <name of static group, a number starting at 1 will be added> [ full jss URL ]
   
+
   eg ${ME} "MDM Renewal Devices group"
+     ${ME} "MDM Renewal Devices group" "https://myco.jamfcloud.com"
 
 EOF
   premExit=1
@@ -188,7 +189,7 @@ esac
 statMsg "jssURL ${jssURL} is valid. Continuing" ""
 
 # get user creds and token
-while [ "${authSuccess}" -ne 0 ]; do
+while : ; do
   /bin/echo ""
   printf "Enter your API username (leave blank to exit): "
   read -r apiUsername
@@ -214,8 +215,8 @@ while [ "${authSuccess}" -ne 0 ]; do
     200)
       statMsg "Authentication successful" ""
       statMsg "Token created successfully"
-      authSuccess=0
       unset apiPassword
+      break
       ;;
 
     *)
@@ -232,6 +233,67 @@ apiToken=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .token)
 # process the token's expiry
 processTokenExpiry
 
+# create the missing MDM profile EA for monitoring
+statMsg "Creating the monitoring EA"
+# shellcheck disable=SC2016
+responseEA=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}/api/v1/computer-extension-attributes" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" \
+  -d '{
+  "name": "PI102825 - No MDM Profile",
+  "description": "Monitoring EA for PI102825",
+  "dataType": "STRING",
+  "popupMenuChoices": [],
+  "ldapAttributeMapping": "",
+  "ldapExtensionAttributeAllowed": null,
+  "inventoryDisplayType": "GENERAL",
+  "inputType": "SCRIPT",
+  "scriptContents": "#!/bin/bash\nmdmProfile=$(/usr/libexec/mdmclient QueryInstalledProfiles | grep \"00000000-0000-0000-A000-4A414D460003\")\nif [[ $mdmProfile == \"\" ]]; then\n            result=\"MDM Profile Not Installed\"\nelse\n            result=\"MDM Profile Installed\"\nfi\necho \"<result>$result</result>\"",
+  "enabled": true,
+  "manageExistingData": null
+}')
+responseCode=$(/bin/echo "${responseEA}" | /usr/bin/tail -n 1)
+case "${responseCode}" in
+  201)
+    statMsg "Successfully created the EA"
+    ;;
+
+  *)
+    statMsg "An error creating the EA occurred. $(/bin/echo "${responseEA}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].code')"
+    ;;
+esac
+
+sleep 1
+
+# create the smart group for the EA
+statMsg "Creating the smart group for EA monitoring"
+responseSM=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}api/v2/computer-groups/smart-groups" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" \
+  -d '{
+  "name": "PI102825 - No MDM Profile",
+  "description": "Monitoring for PI102825",
+  "criteria": [
+    {
+      "name": "PI102825 - No MDM Profile",
+      "priority": 0,
+      "andOr": "and",
+      "searchType": "is",
+      "value": "MDM Profile Not Installed",
+      "openingParen": false,
+      "closingParen": false
+    }
+  ],
+  "siteId": "-1"
+}')
+responseCode=$(/bin/echo "${responseSM}" | /usr/bin/tail -n 1)
+case "${responseCode}" in
+  201)
+    statMsg "Successfully created the smart group"
+    ;;
+
+  *)
+    statMsg "An error creating the smart group occurred. $(/bin/echo "${responseSM}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].code')"
+    ;;
+esac
+
+
 TMPDIR=$(mktemp -d)
 pageNum=0
 grpNum=1
@@ -241,8 +303,17 @@ while : ; do
   readResult=$(apiRead "JSSResource/computergroups/name/${encodedGroupName}" | /usr/bin/xmllint --xpath '//computer_group/id/text()' - 2>/dev/null)
   if [ "${readResult}" ]; then
     statMsg "Group ${theGroupName} ${grpNum} exists. Deleting..."
-    # apiDelete "" >/dev/null 2>&1
-    /usr/bin/curl -s -X DELETE "${jssURL}JSSResource/computergroups/id/${readResult}" -H "Accept: application/xml" -H "Authorization: Bearer ${apiToken}" >/dev/null 2>&1
+    responseDel=$(/usr/bin/curl -s -w "\n%{http_code}" -X DELETE "${jssURL}JSSResource/computergroups/id/${readResult}" -H "Accept: application/xml" -H "Authorization: Bearer ${apiToken}")
+    responseCode=$(/bin/echo "${responseDel}" | /usr/bin/tail -n 1)
+    case "${responseCode}" in
+      200)
+        statMsg "Successfully deleted the static group"
+        ;;
+
+      *)
+        statMsg "An error deleting the static group occured."
+        ;;
+    esac
   else
     statMsg "Group ${theGroupName} ${grpNum} doesn't exist. Continuing..."
   fi
@@ -268,9 +339,20 @@ EOF
 EOF
 
   statMsg "Adding group ${theGroupName} ${grpNum}" ""
-  /usr/bin/curl -s "${jssURL}JSSResource/computergroups/id/0" -H "Content-Type: application/xml" -H "Authorization: Bearer ${apiToken}" --data "$(cat "${FILEOUT}")" >/dev/null 2>&1
-  
+  reponseCreate=$(/usr/bin/curl -s -w "\n%{http_code}" "${jssURL}JSSResource/computergroups/id/0" -H "Content-Type: application/xml" -H "Authorization: Bearer ${apiToken}" --data "$(cat "${FILEOUT}")")
+  responseCode=$(/bin/echo "${responseDel}" | /usr/bin/tail -n 1)
+  case "${responseCode}" in
+    200)
+      statMsg "Successfully created the static group ${theGroupName} ${grpNum}"
+      ;;
+
+    *)
+      statMsg "An error creating the static group ${theGroupName} ${grpNum} occurred."
+      ;;
+  esac
+
   if [ "$(/bin/echo "${serialList}" | /usr/bin/wc -l | /usr/bin/xargs)" -ne "${grpSize}" ]; then
+    statMsg "Finished creating required static groups" ""
     /bin/rm -rf "${TMPDIR}"
     break
   fi
