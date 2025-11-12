@@ -1,4 +1,4 @@
-# PI102825GroupCreater-jamf
+# PI102825 Group Creater
 
 PI102825 relates to devices failing to renew their MDM profile when the built-in Jamf CA needs to be renewed in organisations with over 500 devices.
 
