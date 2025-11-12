@@ -1,10 +1,38 @@
 #!/bin/sh
 
+####################################################################################################
+#
+# Copyright (c) 2015, JAMF Software, LLC.  All rights reserved.
+#
+#       Redistribution and use in source and binary forms, with or without
+#       modification, are permitted provided that the following conditions are met:
+#               * Redistributions of source code must retain the above copyright
+#                 notice, this list of conditions and the following disclaimer.
+#               * Redistributions in binary form must reproduce the above copyright
+#                 notice, this list of conditions and the following disclaimer in the
+#                 documentation and/or other materials provided with the distribution.
+#               * Neither the name of the JAMF Software, LLC nor the
+#                 names of its contributors may be used to endorse or promote products
+#                 derived from this software without specific prior written permission.
+#
+#       THIS SOFTWARE IS PROVIDED BY JAMF SOFTWARE, LLC "AS IS" AND ANY
+#       EXPRESSED OR IMPLIED WARRANTIES, INCLUDING, BUT NOT LIMITED TO, THE IMPLIED
+#       WARRANTIES OF MERCHANTABILITY AND FITNESS FOR A PARTICULAR PURPOSE ARE
+#       DISCLAIMED. IN NO EVENT SHALL JAMF SOFTWARE, LLC BE LIABLE FOR ANY
+#       DIRECT, INDIRECT, INCIDENTAL, SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES
+#       (INCLUDING, BUT NOT LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES;
+#       LOSS OF USE, DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND
+#       ON ANY THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+#       (INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE OF THIS
+#       SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+#
+####################################################################################################
+
 ###################
 # pi102825_group_creater.sh - script to create static groups of devices for PI102825
-# Shannon Pasto <shannon.pasto@jamf.com>
+# Shannon Pasto <shannon.pasto at jamf.com>
 #
-# v1.1 (08/09/2025)
+# v1.2 (12/09/2025)
 ###################
 ## uncomment the next line to output debugging to stdout
 #set -x
@@ -48,23 +76,52 @@ apiRead() {
 
 }
 
+apiDelete() {
+  # $1 = endpoint, ie JSSResource/computergroups/id/${readResult}
+  # $2 = acceptYpe, ie json or xml, xml is default
+  # usage: apiDelete "JSSResource/computergroups/id/${readResult}" [ "json" ]
+
+  if [ $# -eq 1 ]; then
+    acceptType="xml"
+  else
+    acceptType="$2"
+  fi
+
+  /usr/bin/curl -s -X DELETE "${jssURL}${1}" -H "Accept: application/${acceptType}" -H "Authorization: Bearer ${apiToken}"
+
+}
+
 processTokenExpiry() {
   # returns apiTokenExpiresEpochUTC
   # time is UTC!!!
   # usage: processTokenExpiry
   
-  apiTokenExpiresLongUTC=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .expires | /usr/bin/awk -F . '{ print $1 }')
-  apiTokenExpiresEpochUTC=$(/bin/date -j -f "%Y-%m-%dT%T" "${apiTokenExpiresLongUTC}" +"%s")
+  if [ "${apiUsername}" ]; then
+    apiTokenExpiresLongUTC=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .expires | /usr/bin/awk -F . '{ print $1 }')
+    apiTokenExpiresEpochUTC=$(/bin/date -u -j -f "%Y-%m-%dT%T" "${apiTokenExpiresLongUTC}" +"%s")
+  else
+    apiTokenExpiresInSec=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .expires_in)
+    epochNowUTC=$(/bin/date -u '+%s')
+    apiTokenExpiresEpochUTC=$((apiTokenExpiresInSec+epochNowUTC-15))
+  fi
 
 }
 
 renewToken(){
   # renews a near expiring token
   # usage: renewToken
-  
-  authTokenJson=$(/usr/bin/curl -s -X POST "${jssURL}api/v1/auth/keep-alive" -H "Authorization: Bearer ${apiToken}")
-  # strip out the token
-  apiToken=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .token)
+
+  if [ "${apiUsername}" ] && [ "${epochDiff}" -le 0 ]; then
+    authTokenJson=$(/usr/bin/curl -s "${jssURL}api/v1/auth/token" -X POST -H "Authorization: Basic ${baseCreds}")
+    apiToken=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .token)
+  elif  [ "${apiUsername}" ] && [ "${epochDiff}" -le 30 ]; then
+    authTokenJson=$(/usr/bin/curl -s -X POST "${jssURL}api/v1/auth/keep-alive" -H "Authorization: Bearer ${apiToken}")
+    apiToken=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .token)
+  else
+    authTokenJson=$(/usr/bin/curl -s "${jssURL}api/oauth/token" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "client_id=${clientID}" --data-urlencode "grant_type=client_credentials" --data-urlencode "client_secret=${clientSecret}")
+    apiToken=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .access_token)
+  fi
+
   # process the token's expiry
   processTokenExpiry
 
@@ -73,17 +130,17 @@ renewToken(){
 checkToken() {
   # check the token expiry
   # usage: checkToken
-  
-  epochNowUTC=$(/bin/date -jf "%Y-%m-%dT%T" "$(date -u +"%Y-%m-%dT%T")" +"%s")
+
+  epochNowUTC=$(/bin/date -u +"%s")
   epochDiff=$((apiTokenExpiresEpochUTC - epochNowUTC))
-  if [ "${epochDiff}" -gt 119 ]; then
-    statMsg "Token still valid." >/dev/null 2>&1
-  elif [ "${epochDiff}" -lt 120 ] && [ ${epochDiff} -gt 29 ]; then
-    statMsg "Token nearing expiry. Renewing"
-    renewToken
-  else
+  if [ "${epochDiff}" -le 0 ]; then
     statMsg "Token has expired. Renewing"
     renewToken
+  elif [ "${epochDiff}" -lt 30 ]; then
+    statMsg "Token nearing expiry (${epochDiff}s). Renewing"
+    renewToken
+  else
+    statMsg "Token valid (${epochDiff}s left)"
   fi
 
 }
@@ -91,7 +148,7 @@ checkToken() {
 destroyToken() {
   # destroys the token
   # usage: destroyToken
-  
+
   if [ ! "${premExit}" ]; then
     statMsg "Destroying the token"
     responseCode=$(/usr/bin/curl -w "%{http_code}" -s -X POST "${jssURL}api/v1/auth/invalidate-token" -o /dev/null -H "Authorization: Bearer ${apiToken}")
@@ -117,19 +174,9 @@ destroyToken() {
 
 }
 
-convertRaw() {
-  # convert jamf date to excel date
-  # $1 is raw timestamp from Jamf, eg 2024-07-11T13:21:08.175Z
-  # usage: convertRaw "2024-07-11T13:21:08.175Z"
-  
-  trimmedStamp=$(/bin/echo "$1" | /usr/bin/cut -d . -f -1 -)
-  /bin/date -juf "%Y-%m-%dT%H:%M:%S" "${trimmedStamp}" +"%d/%m/%y %H:%M"
-
-}
-
 ###############################################################################
 ## start the script here
-# trap destroyToken EXIT
+trap destroyToken EXIT
 
 # check that we have enough args
 if [ $# -ne 0 ]; then
@@ -142,10 +189,10 @@ if [ $# -ne 0 ]; then
 else
   cat << EOF
 
-Create static groups, enough for ${grpSize} Macs per group
+Create static groups, enough for ${grpSize} devices per group
 
   usage: ${ME} <name of static group, a number starting at 1 will be added> [ full jss URL ]
-  
+
 
   eg ${ME} "MDM Renewal Devices group"
      ${ME} "MDM Renewal Devices group" "https://myco.jamfcloud.com"
@@ -157,11 +204,12 @@ fi
 
 # verify we have a jssURL. Ask if we don't
 if [ ! "${jssURL}" ]; then
+  statMsg "No jssURL passed as an argument. Reading from this Mac"
   jssURL=$(/usr/libexec/PlistBuddy -c "Print :jss_url" /Library/Preferences/com.jamfsoftware.jamf.plist)
 fi
 until /usr/bin/curl --connect-timeout 5 -s "${jssURL}"; do
   /bin/echo ""
-  /bin/echo "jssURL is invalid"
+  statMsg "jssURL is invalid or none found on this Mac" ""
   /bin/echo ""
   printf "Enter a JSS URL, eg https://jss.jamfcloud.com:8443/ (leave blank to exit): "
   unset jssURL
@@ -188,55 +236,123 @@ esac
 /bin/echo ""
 statMsg "jssURL ${jssURL} is valid. Continuing" ""
 
-# get user creds and token
 while : ; do
   /bin/echo ""
-  printf "Enter your API username (leave blank to exit): "
-  read -r apiUsername
-  if [ ! "${apiUsername}" ]; then
+  printf "Choose the type of authentication, Username/password (U or u) or API roles and clients (R or r) (leave blank to exit): "
+  read -r authChoice
+  if [ ! "${authChoice}" ]; then
     /bin/echo ""
     premExit=1
     exit 0
   fi
-  /bin/echo ""
-  printf "Enter your API password (no echo): "
-  stty -echo
-  read -r apiPassword
-  stty echo
-  echo ""
 
-  baseCreds=$(printf "%s:%s" "${apiUsername}" "${apiPassword}" | /usr/bin/iconv -t ISO-8859-1 | /usr/bin/base64 -i -)
+  case "${authChoice}" in
+    U|u)
+      # get user creds and token
+      while : ; do
+        /bin/echo ""
+        printf "Enter your API username (leave blank to exit): "
+        read -r apiUsername
+        if [ ! "${apiUsername}" ]; then
+          /bin/echo ""
+          premExit=1
+          exit 0
+        fi
+        /bin/echo ""
+        printf "Enter your API password (no echo): "
+        stty -echo
+        read -r apiPassword
+        stty echo
+        echo ""
 
-  # get the token
-  authTokenRAW=$(/usr/bin/curl -s -w "%{http_code}" "${jssURL}api/v1/auth/token" -X POST -H "Authorization: Basic ${baseCreds}")
-  authTokenJson=${authTokenRAW%???}
-  httpCode=${authTokenRAW#"$authTokenJson"}
-  case "${httpCode}" in
-    200)
-      statMsg "Authentication successful" ""
-      statMsg "Token created successfully"
-      unset apiPassword
-      break
+        baseCreds=$(printf "%s:%s" "${apiUsername}" "${apiPassword}" | /usr/bin/iconv -t ISO-8859-1 | /usr/bin/base64 -i -)
+
+        # get the token
+        authTokenRAW=$(/usr/bin/curl -s -w "%{http_code}" "${jssURL}api/v1/auth/token" -X POST -H "Authorization: Basic ${baseCreds}")
+        authTokenJson=$(printf '%s' "${authTokenRAW}" | /usr/bin/sed -e '$s/...$//' )
+        httpCode=$(printf '%s' "${authTokenRAW}" | /usr/bin/tail -c 3)
+        case "${httpCode}" in
+          200)
+            statMsg "Authentication successful" ""
+            statMsg "Token created successfully"
+
+            # strip out the token
+            apiToken=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .token)
+
+            # process the token's expiry
+            processTokenExpiry
+
+            # unset apiPassword
+            break 2
+            ;;
+
+          *)
+            printf '\nError getting token. HTTP Status code: %s\n\nPlease try again.\n\n' "${httpCode}"
+            premExit=1
+            continue
+            ;;
+        esac
+      done
+
       ;;
 
-    *)
-      printf '\nError getting token. HTTP Status code: %s\n\nPlease try again.\n\n' "${httpCode}"
-      premExit=1
-      ;;
-  esac
+    R|r)
+      statMsg "API roles and clients has been chosen" ""
+      /bin/echo ""
+      while : ; do
+        echo ""
+        printf "Enter your client id (leave blank to exit): "
+        read -r clientID
+        if [ ! "${clientID}" ]; then
+          /bin/echo ""
+          premExit=1
+          exit 0
+        fi
 
+        /bin/echo ""
+        printf "Enter your client secret (no echo): "
+        stty -echo
+        read -r clientSecret
+        stty echo
+
+        authTokenRAW=$(/usr/bin/curl -s -w "%{http_code}" "${jssURL}api/oauth/token" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "client_id=${clientID}" --data-urlencode "grant_type=client_credentials" --data-urlencode "client_secret=${clientSecret}")
+        authTokenJson=$(printf '%s' "${authTokenRAW}" | /usr/bin/sed -e '$s/...$//' )
+        httpCode=$(printf '%s' "${authTokenRAW}" | /usr/bin/tail -c 3)
+        case "${httpCode}" in
+          200)
+            /bin/echo ""
+            /bin/echo "Token created successfully"
+
+            # strip out the token
+            apiToken=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .access_token)
+            processTokenExpiry
+
+            # unset clientSecret
+            break 2
+            ;;
+
+          *)
+            printf '\nError getting token. http error code is: %s\n\nPlease try again.\n\n' "${httpCode}"
+            premExit=1
+            continue
+            ;;
+        esac
+
+
+      done
+      ;;
+
+       *)
+        /bin/echo ""
+        /bin/echo "Unknown choice. Please try again. Leave blank to exit."
+        ;;
+      esac
 done
-
-# strip out the token
-apiToken=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .token)
-
-# process the token's expiry
-processTokenExpiry
 
 # create the missing MDM profile EA for monitoring
 statMsg "Creating the monitoring EA"
 # shellcheck disable=SC2016
-responseEA=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}/api/v1/computer-extension-attributes" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" \
+responseEA=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}api/v1/computer-extension-attributes" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" \
   -d '{
   "name": "PI102825 - No MDM Profile",
   "description": "Monitoring EA for PI102825",
@@ -253,11 +369,15 @@ responseEA=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}/api/v1/comp
 responseCode=$(/bin/echo "${responseEA}" | /usr/bin/tail -n 1)
 case "${responseCode}" in
   201)
-    statMsg "Successfully created the EA"
+    statMsg "Successfully created the EA \"PI102825 - No MDM Profile\""
     ;;
 
   *)
-    statMsg "An error creating the EA occurred. $(/bin/echo "${responseEA}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].code')"
+    # if [ "$(/bin/echo "${responseEA}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].code')" = "DUPLICATE_FIELD" ]; then
+      statMsg "EA already exists."
+    # else
+      statMsg "$(/bin/echo "${responseEA}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].description')" ""
+    # fi
     ;;
 esac
 
@@ -285,42 +405,68 @@ responseSM=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}api/v2/compu
 responseCode=$(/bin/echo "${responseSM}" | /usr/bin/tail -n 1)
 case "${responseCode}" in
   201)
-    statMsg "Successfully created the smart group"
+    statMsg "Successfully created the smart group \"PI102825 - No MDM Profile\""
     ;;
 
   *)
-    statMsg "An error creating the smart group occurred. $(/bin/echo "${responseSM}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].code')"
+    # if [ "$(/bin/echo "${responseSM}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].code')" = "DUPLICATE_FIELD" ]; then
+      # statMsg "Computer Smart Group already exists."
+    # else
+      statMsg "$(/bin/echo "${responseSM}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].description')" ""
+    # fi
     ;;
 esac
 
-
-TMPDIR=$(mktemp -d)
-pageNum=0
+# delete any previous static computer groups
 grpNum=1
 while : ; do
-  # check if the group already exists. If it does, delete it
+
   encodedGroupName=$(printf '%s' "${theGroupName} ${grpNum}" | /usr/bin/xxd -p | /usr/bin/sed 's/\(..\)/%\1/g' | /usr/bin/tr -d '\n')
   readResult=$(apiRead "JSSResource/computergroups/name/${encodedGroupName}" | /usr/bin/xmllint --xpath '//computer_group/id/text()' - 2>/dev/null)
   if [ "${readResult}" ]; then
-    statMsg "Group ${theGroupName} ${grpNum} exists. Deleting..."
-    responseDel=$(/usr/bin/curl -s -w "\n%{http_code}" -X DELETE "${jssURL}JSSResource/computergroups/id/${readResult}" -H "Accept: application/xml" -H "Authorization: Bearer ${apiToken}")
-    responseCode=$(/bin/echo "${responseDel}" | /usr/bin/tail -n 1)
-    case "${responseCode}" in
-      200)
-        statMsg "Successfully deleted the static group"
-        ;;
-
-      *)
-        statMsg "An error deleting the static group occured."
-        ;;
-    esac
+    statMsg "Computer static group ${theGroupName} ${grpNum} found. Deleting" ""
+    apiDelete "JSSResource/computergroups/id/${readResult}" >/dev/null 2>&1
+    grpNum=$((grpNum+1))
   else
-    statMsg "Group ${theGroupName} ${grpNum} doesn't exist. Continuing..."
+    break
   fi
-    
-  serialList=$(apiRead "api/v1/computers-inventory?section=HARDWARE&page-size=${grpSize}&page=${pageNum}" "json" | /usr/bin/jq -r .results[].hardware.serialNumber)
-  FILEOUT="${TMPDIR}/${grpNum}.xml"
-  
+
+  sleep 1
+done
+totalCompDeleted=$((grpNum-1))
+
+# delete any previous static mobile device groups
+grpNum=1
+while : ; do
+  encodedGroupName=$(printf '%s' "${theGroupName} ${grpNum}" | /usr/bin/xxd -p | /usr/bin/sed 's/\(..\)/%\1/g' | /usr/bin/tr -d '\n')
+  readResult=$(apiRead "api/v1/mobile-device-groups/static-groups?page=0&page-size=100&sort=groupId%3Aasc&filter=groupName%3D%3D%22${encodedGroupName}%22" "json" | /usr/bin/jq -r '.results[].groupId')
+  if [ "${readResult}" ]; then
+    statMsg "Mobile Device static group ${theGroupName} ${grpNum} found. Deleting" ""
+    apiDelete "api/v1/mobile-device-groups/static-groups/${readResult}" "json" >/dev/null 2>&1
+    grpNum=$((grpNum+1))
+  else
+    break
+  fi
+
+  sleep 1
+done
+totalMobDevDeleted=$((grpNum-1))
+
+# sleep here while we wait for the d/b to catch up
+sleep 15
+
+checkToken
+
+TMPDIR=$(mktemp -d)
+
+compTmpDir="${TMPDIR}/computers"
+mkdir "${compTmpDir}"
+pageNum=0
+grpNum=1
+while : ; do
+  serialList=$(apiRead "api/v1/computers-inventory?section=HARDWARE&page=0&page-size=100&sort=general.name%3Aasc&filter=general.remoteManagement.managed%3D%3D%22true%22" "json" | /usr/bin/jq -r .results[].hardware.serialNumber)
+  FILEOUT="${compTmpDir}/${grpNum}.xml"
+
   # write out the xml header
   cat << EOF > "${FILEOUT}"
 <?xml version="1.0" encoding="UTF-8"?><computer_group><name>${theGroupName} ${grpNum}</name><is_smart>false</is_smart><computers>
@@ -332,33 +478,111 @@ EOF
 <computer><serial_number>${theSerial}</serial_number></computer>
 EOF
   done
-  
+
   # write out the xml footer
   cat << EOF >> "${FILEOUT}"
 </computers></computer_group>
 EOF
 
-  statMsg "Adding group ${theGroupName} ${grpNum}" ""
-  reponseCreate=$(/usr/bin/curl -s -w "\n%{http_code}" "${jssURL}JSSResource/computergroups/id/0" -H "Content-Type: application/xml" -H "Authorization: Bearer ${apiToken}" --data "$(cat "${FILEOUT}")")
-  responseCode=$(/bin/echo "${responseDel}" | /usr/bin/tail -n 1)
+  statMsg "Adding Computer group ${theGroupName} ${grpNum}" ""
+  responseCreate=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}JSSResource/computergroups/id/0" -H "Content-Type: application/xml" -H "Authorization: Bearer ${apiToken}" --data "$(cat "${FILEOUT}")")
+  responseCode=$(/bin/echo "${responseCreate}" | /usr/bin/tail -n 1)
   case "${responseCode}" in
-    200)
-      statMsg "Successfully created the static group ${theGroupName} ${grpNum}"
+    200|201)
+      statMsg "Successfully created the Computer static group ${theGroupName} ${grpNum}"
       ;;
 
     *)
-      statMsg "An error creating the static group ${theGroupName} ${grpNum} occurred."
+      statMsg "An error creating the Computer static group ${theGroupName} ${grpNum} occurred."
+      echo "${responseCreate}"
       ;;
   esac
 
   if [ "$(/bin/echo "${serialList}" | /usr/bin/wc -l | /usr/bin/xargs)" -ne "${grpSize}" ]; then
-    statMsg "Finished creating required static groups" ""
-    /bin/rm -rf "${TMPDIR}"
+    statMsg "Finished creating required static Computer groups" ""
+    # /bin/rm -rf "${TMPDIR}"
     break
   fi
-  
+
   pageNum=$((pageNum+1))
   grpNum=$((grpNum+1))
   checkToken
   sleep 2
 done
+totalCompCreataed="${grpNum}"
+
+mobDevTmpDir="${TMPDIR}/mobiledevices"
+mkdir "${mobDevTmpDir}"
+pageNum=0
+grpNum=1
+while : ; do
+  idList=$(apiRead "api/v2/mobile-devices/detail?section=HARDWARE&page-size=${grpSize}&page=${pageNum}&filter=managed%3D%3Dtrue" "json" | /usr/bin/jq -r '.results[].mobileDeviceId')
+  FILEOUT="${mobDevTmpDir}/${grpNum}.json"
+  memberCount=$(/bin/echo "${idList}" | /usr/bin/wc -l | /usr/bin/xargs)
+
+  # write out the json header
+  cat << EOF > "${FILEOUT}"
+{
+    "groupName": "${theGroupName} ${grpNum}",
+    "groupDescription": "${theGroupName} ${grpNum}",
+    "siteId": "-1",
+    "assignments": [
+EOF
+
+  # write out the serials
+  printf "%s\n" "$idList" | while read -r theID; do
+    cat << EOF >> "${FILEOUT}"
+        {
+            "mobileDeviceId": "$theID",
+            "selected": true
+        },
+EOF
+  done
+
+  # need to remove the last character, ie the ","
+  /usr/bin/sed -i '' '$s/.*/        }/' "${FILEOUT}"
+
+  # write out the xml footer
+  cat << EOF >> "${FILEOUT}"
+    ]
+}
+EOF
+
+  statMsg "Adding Mobile Device group ${theGroupName} ${grpNum}" ""
+  responseCreate=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}api/v1/mobile-device-groups/static-groups${curlExtra}" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" --data "$(cat "${FILEOUT}")")
+  responseCode=$(/bin/echo "${responseCreate}" | /usr/bin/tail -n 1)
+  case "${responseCode}" in
+    200|201)
+      statMsg "Successfully created the Mobile Device static group ${theGroupName} ${grpNum}"
+      ;;
+
+    *)
+      statMsg "An error creating the Mobile Device static group ${theGroupName} ${grpNum} occurred."
+      ;;
+  esac
+
+  if [ "${memberCount}" -ne "${grpSize}" ]; then
+    statMsg "Finished creating required static Mobile Device groups" ""
+    # /bin/rm -rf "${TMPDIR}"
+    break
+  fi
+
+  pageNum=$((pageNum+1))
+  grpNum=$((grpNum+1))
+  checkToken
+  sleep 2
+done
+totalMobDevCreataed="${grpNum}"
+
+cat << EOF
+
+  Creation summary:
+
+  Total static Computer groups deleted: ${totalCompDeleted}
+  Total static Mobile Device groups deleted: ${totalMobDevDeleted}
+  Total static Computer groups created: ${totalCompCreataed}
+  Total static Mobile Device groups created: ${totalMobDevCreataed}
+
+  Refer to ${logFile} for more information
+
+EOF
