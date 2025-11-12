@@ -2,7 +2,9 @@
 
 PI102825 relates to devices failing to renew their MDM profile when the built-in Jamf CA needs to be renewed in organisations with over 500 devices.
 
-To use the script, download and run `sh pi102825_group_creater.sh <name of static group, a number starting at 1 will be added> [ full jss URL ]` You can use either username/password or oauth (ie API Client) credentials. If you use oath, be sure to add the appropriate roles as listed below. Run with arguemtns for syntax.
+To use the script, download and run `sh pi102825_group_creater.sh <name of static group, a number starting at 1 will be added> [ full jss URL ]` You can use either username/password or oauth (ie API Client) credentials. If you use oath, be sure to add the appropriate roles as listed below. 
+
+Run without arguments for syntax full syntax and examples.
 
 For more information on this PI, please contact Jamf support.
 
