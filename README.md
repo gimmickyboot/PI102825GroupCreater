@@ -2,7 +2,7 @@
 
 PI102825 relates to devices failing to renew their MDM profile when the built-in Jamf CA needs to be renewed in organisations with over 500 devices.
 
-To use the script, download and run `sh pi102825_group_creater.sh <name of static group, a number starting at 1 will be added> [ full jss URL ]` You can use either username/password or oauth (ie API Client) credentials. See [Permissions](#permissions) section below for more information on the required privileges or API roles.
+To use the script, download and run `sh pi102825_group_creater.sh <name of static group, a number starting at 1 will be added> [ --cleanup ] [ full jss URL ]` You can use either username/password or oauth (ie API Client) credentials. See [Permissions](#permissions) section below for more information on the required privileges or API roles.
 
 Run without arguments for full syntax and examples.
 ```
@@ -10,14 +10,14 @@ Run without arguments for full syntax and examples.
 
 Create static groups, enough for 100 devices per group
 
-  usage: pi102825_group_creater.sh <name of static group, a number starting at 1 will be added> [ full jss URL ]
+  usage: pi102825_group_creater.sh <name of static group, a number starting at 1 will be added> [ --cleanup ] [ full jss URL ]
 
 
   eg pi102825_group_creater.sh "MDM Renewal Devices group"
      pi102825_group_creater.sh "MDM Renewal Devices group" "https://myco.jamfcloud.com"
 ```
 ### Notes
-- If exsiting groups are found, ie "MDM Renewal Devices group" in the above example, the group will be deleted and recreated.
+- Script will exit if re-existing groups are found. Run with `--cleanup` to override
 - The JSS URL is optional. If none is specified, the script will attempt to detect the URL from the Mac the script is running on. If none is found, you will be asked to enter one.
 
 For more information on this PI, please contact Jamf support.
