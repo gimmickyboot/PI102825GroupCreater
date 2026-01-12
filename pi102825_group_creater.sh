@@ -4,7 +4,7 @@
 # pi102825_group_creater.sh - script to create static groups of devices for PI102825
 # https://github.com/gimmickyboot/PI102825GroupCreater-jamf
 #
-# v1.2.1 (19/12/2025)
+# v1.2.2 (12/01/2026)
 ###################
 ## uncomment the next line to output debugging to stdout
 #set -x
@@ -435,8 +435,10 @@ compTmpDir="${TMPDIR}/computers"
 mkdir "${compTmpDir}"
 pageNum=0
 grpNum=1
-while : ; do
-  serialList=$(apiRead "api/v1/computers-inventory?section=HARDWARE&page=0&page-size=100&sort=general.name%3Aasc&filter=general.remoteManagement.managed%3D%3D%22true%22" "json" | /usr/bin/jq -r .results[].hardware.serialNumber)
+totalCompCount=$(apiRead "api/v1/computers-inventory?section=HARDWARE&filter=general.remoteManagement.managed%3D%3D%22true%22" "json" | /usr/bin/jq -r .totalCount)
+totalCompGroups=$(( (totalCompCount + grpSize - 1) / 100))
+while [ $grpNum -le $totalCompGroups ]; do
+  serialList=$(apiRead "api/v1/computers-inventory?section=HARDWARE&page=${pageNum}&page-size=${grpSize}&sort=general.name%3Aasc&filter=general.remoteManagement.managed%3D%3D%22true%22" "json" | /usr/bin/jq -r .results[].hardware.serialNumber)
   FILEOUT="${compTmpDir}/${grpNum}.xml"
 
   # write out the xml header
@@ -470,27 +472,23 @@ EOF
       ;;
   esac
 
-  if [ "$(/bin/echo "${serialList}" | /usr/bin/wc -l | /usr/bin/xargs)" -ne "${grpSize}" ]; then
-    statMsg "Finished creating required static Computer groups" ""
-    # /bin/rm -rf "${TMPDIR}"
-    break
-  fi
-
   pageNum=$((pageNum+1))
   grpNum=$((grpNum+1))
   checkToken
   sleep 2
 done
-totalCompCreataed="${grpNum}"
+totalCompCreataed=$((grpNum-1))
+statMsg "Finished creating required static Computer groups" ""
 
 mobDevTmpDir="${TMPDIR}/mobiledevices"
 mkdir "${mobDevTmpDir}"
 pageNum=0
 grpNum=1
-while : ; do
+totalMobDevCount=$(apiRead "api/v2/mobile-devices/detail?section=HARDWARE&filter=managed%3D%3Dtrue" "json" | /usr/bin/jq -r .totalCount)
+totalMobDevGroups=$(( (totalMobDevCount + grpSize - 1) / 100))
+while [ $grpNum -le $totalMobDevGroups ]; do
   idList=$(apiRead "api/v2/mobile-devices/detail?section=HARDWARE&page-size=${grpSize}&page=${pageNum}&filter=managed%3D%3Dtrue" "json" | /usr/bin/jq -r '.results[].mobileDeviceId')
   FILEOUT="${mobDevTmpDir}/${grpNum}.json"
-  memberCount=$(/bin/echo "${idList}" | /usr/bin/wc -l | /usr/bin/xargs)
 
   # write out the json header
   cat << EOF > "${FILEOUT}"
@@ -521,7 +519,7 @@ EOF
 EOF
 
   statMsg "Adding Mobile Device group ${theGroupName} ${grpNum}" ""
-  responseCreate=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}api/v1/mobile-device-groups/static-groups${curlExtra}" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" --data "$(cat "${FILEOUT}")")
+  responseCreate=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}api/v1/mobile-device-groups/static-groups?platform=false" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" --data "$(cat "${FILEOUT}")")
   responseCode=$(/bin/echo "${responseCreate}" | /usr/bin/tail -n 1)
   case "${responseCode}" in
     200|201)
@@ -533,18 +531,13 @@ EOF
       ;;
   esac
 
-  if [ "${memberCount}" -ne "${grpSize}" ]; then
-    statMsg "Finished creating required static Mobile Device groups" ""
-    # /bin/rm -rf "${TMPDIR}"
-    break
-  fi
-
   pageNum=$((pageNum+1))
   grpNum=$((grpNum+1))
   checkToken
   sleep 2
 done
-totalMobDevCreataed="${grpNum}"
+totalMobDevCreataed=$((grpNum-1))
+statMsg "Finished creating required static Mobile Device groups" ""
 
 cat << EOF
 
