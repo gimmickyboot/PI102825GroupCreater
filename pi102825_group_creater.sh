@@ -4,7 +4,7 @@
 # pi102825_group_creater.sh - script to create static groups of devices for PI102825
 # https://github.com/gimmickyboot/PI102825GroupCreater-jamf
 #
-# v1.2.2 (12/01/2026)
+# v1.3 (13/01/2026)
 ###################
 ## uncomment the next line to output debugging to stdout
 #set -x
@@ -17,6 +17,7 @@ ME=$(basename "$0")
 BINPATH=$(dirname "$0")
 logFile="${HOME}/Library/Logs/$(basename "${ME}" .sh).log"
 grpSize=100  # must not be greater than 100
+CLEANUP=false
 
 ###############################################################################
 ## function declarations
@@ -146,24 +147,12 @@ destroyToken() {
 
 }
 
-###############################################################################
-## start the script here
-trap destroyToken EXIT
-
-# check that we have enough args
-if [ $# -ne 0 ]; then
-  theGroupName="$1"
-  if [ $# -eq 2 ]; then
-    jssURL=$2
-  fi
-  # clear the terminal
-  clear
-else
-  cat << EOF
+usage() {
+    cat << EOF
 
 Create static groups, enough for ${grpSize} devices per group
 
-  usage: ${ME} <name of static group, a number starting at 1 will be added> [ full jss URL ]
+  usage: ${ME} <name of static group, a number starting at 1 will be added> [ --cleanup ] [ full jss URL ]
 
 
   eg ${ME} "MDM Renewal Devices group"
@@ -172,7 +161,45 @@ Create static groups, enough for ${grpSize} devices per group
 EOF
   premExit=1
   exit 1
+
+}
+
+###############################################################################
+## start the script here
+trap destroyToken EXIT
+
+# check that we have enough args
+if [ $# -lt 1 ]; then
+  usage
+else
+  # clear the terminal
+  clear
 fi
+
+theGroupName=$1
+shift
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+      --cleanup)
+          CLEANUP=true
+          ;;
+
+      http://*|https://*)
+          if [ -n "${jssURL}" ]; then
+              echo "Error: URL specified more than once" >&2
+              usage
+          fi
+          jssURL=$1
+          ;;
+
+      *)
+          echo "Unknown argument: $1" >&2
+          usage
+          ;;
+  esac
+  shift
+done
 
 # verify we have a jssURL. Ask if we don't
 if [ ! "${jssURL}" ]; then
@@ -390,42 +417,52 @@ case "${responseCode}" in
 esac
 
 # delete any previous static computer groups
-grpNum=1
-while : ; do
+if [ "${CLEANUP}" = "true" ]; then
+  grpNum=1
+  while : ; do
+    encodedGroupName=$(printf '%s' "${theGroupName} ${grpNum}" | /usr/bin/xxd -p | /usr/bin/sed 's/\(..\)/%\1/g' | /usr/bin/tr -d '\n')
+    readResult=$(apiRead "JSSResource/computergroups/name/${encodedGroupName}" | /usr/bin/xmllint --xpath '//computer_group/id/text()' - 2>/dev/null)
+    if [ "${readResult}" ]; then
+      statMsg "Computer static group ${theGroupName} ${grpNum} deleted." ""
+      apiDelete "JSSResource/computergroups/id/${readResult}" >/dev/null 2>&1
+      grpNum=$((grpNum+1))
+    else
+      break
+    fi
 
-  encodedGroupName=$(printf '%s' "${theGroupName} ${grpNum}" | /usr/bin/xxd -p | /usr/bin/sed 's/\(..\)/%\1/g' | /usr/bin/tr -d '\n')
-  readResult=$(apiRead "JSSResource/computergroups/name/${encodedGroupName}" | /usr/bin/xmllint --xpath '//computer_group/id/text()' - 2>/dev/null)
-  if [ "${readResult}" ]; then
-    statMsg "Computer static group ${theGroupName} ${grpNum} found. Deleting" ""
-    apiDelete "JSSResource/computergroups/id/${readResult}" >/dev/null 2>&1
-    grpNum=$((grpNum+1))
-  else
-    break
+    sleep 1
+  done
+  totalCompDeleted=$((grpNum-1))
+
+  # delete any previous static mobile device groups
+  grpNum=1
+  while : ; do
+    readResult=$(apiRead "api/v1/mobile-device-groups/static-groups?page=0&page-size=100&sort=groupId%3Aasc&filter=groupName%3D%3D%22${encodedGroupName}%22" "json" | /usr/bin/jq -r '.results[].groupId')
+    if [ "${readResult}" ]; then
+      statMsg "Mobile Device static group ${theGroupName} ${grpNum} deleted." ""
+      apiDelete "api/v1/mobile-device-groups/static-groups/${readResult}" "json" >/dev/null 2>&1
+      grpNum=$((grpNum+1))
+    else
+      break
+    fi
+
+    sleep 1
+  done
+  totalMobDevDeleted=$((grpNum-1))
+else
+  encodedGroupName=$(printf '%s' "${theGroupName} 1" | /usr/bin/xxd -p | /usr/bin/sed 's/\(..\)/%\1/g' | /usr/bin/tr -d '\n')
+  compGrpReadResult=$(/usr/bin/curl -s -w "%{http_code}" -X GET "${jssURL}JSSResource/computergroups/name/${encodedGroupName}" -H "Authorization: Bearer ${apiToken}" -o /dev/null)
+  mobDevGrpReadResult=$(/usr/bin/curl -s -w "%{http_code}" -X GET "${jssURL}api/v1/mobile-device-groups/static-groups?page=0&page-size=100&sort=groupId%3Aasc&filter=groupName%3D%3D%22${encodedGroupName}%22" -H "Authorization: Bearer ${apiToken}" -o /dev/null)
+  if [ "${compGrpReadResult}" = "200" ] || [ "${mobDevGrpReadResult}" = "200" ]; then
+    statMsg "ERROR: Pre-existing groups already exist. Please re-run with --cleanup or choose a different group name" ""
+    exit 1
   fi
+fi
 
-  sleep 1
-done
-totalCompDeleted=$((grpNum-1))
-
-# delete any previous static mobile device groups
-grpNum=1
-while : ; do
-  encodedGroupName=$(printf '%s' "${theGroupName} ${grpNum}" | /usr/bin/xxd -p | /usr/bin/sed 's/\(..\)/%\1/g' | /usr/bin/tr -d '\n')
-  readResult=$(apiRead "api/v1/mobile-device-groups/static-groups?page=0&page-size=100&sort=groupId%3Aasc&filter=groupName%3D%3D%22${encodedGroupName}%22" "json" | /usr/bin/jq -r '.results[].groupId')
-  if [ "${readResult}" ]; then
-    statMsg "Mobile Device static group ${theGroupName} ${grpNum} found. Deleting" ""
-    apiDelete "api/v1/mobile-device-groups/static-groups/${readResult}" "json" >/dev/null 2>&1
-    grpNum=$((grpNum+1))
-  else
-    break
-  fi
-
-  sleep 1
-done
-totalMobDevDeleted=$((grpNum-1))
-
-# sleep here while we wait for the d/b to catch up
-sleep 15
+if [ "${totalCompDeleted}" ] || [ "${totalMobDevDeleted}" ]; then
+  # sleep here while we wait for the d/b to catch up
+  sleep 15
+fi
 
 checkToken
 
