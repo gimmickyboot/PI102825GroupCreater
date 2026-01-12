@@ -4,7 +4,7 @@
 # pi102825_group_creater.sh - script to create static groups of devices for PI102825
 # https://github.com/gimmickyboot/PI102825GroupCreater-jamf
 #
-# v1.3 (13/01/2026)
+# v1.3.1 (13/01/2026)
 ###################
 ## uncomment the next line to output debugging to stdout
 #set -x
@@ -437,6 +437,7 @@ if [ "${CLEANUP}" = "true" ]; then
   # delete any previous static mobile device groups
   grpNum=1
   while : ; do
+    encodedGroupName=$(printf '%s' "${theGroupName} ${grpNum}" | /usr/bin/xxd -p | /usr/bin/sed 's/\(..\)/%\1/g' | /usr/bin/tr -d '\n')
     readResult=$(apiRead "api/v1/mobile-device-groups/static-groups?page=0&page-size=100&sort=groupId%3Aasc&filter=groupName%3D%3D%22${encodedGroupName}%22" "json" | /usr/bin/jq -r '.results[].groupId')
     if [ "${readResult}" ]; then
       statMsg "Mobile Device static group ${theGroupName} ${grpNum} deleted." ""
@@ -452,8 +453,9 @@ if [ "${CLEANUP}" = "true" ]; then
 else
   encodedGroupName=$(printf '%s' "${theGroupName} 1" | /usr/bin/xxd -p | /usr/bin/sed 's/\(..\)/%\1/g' | /usr/bin/tr -d '\n')
   compGrpReadResult=$(/usr/bin/curl -s -w "%{http_code}" -X GET "${jssURL}JSSResource/computergroups/name/${encodedGroupName}" -H "Authorization: Bearer ${apiToken}" -o /dev/null)
-  mobDevGrpReadResult=$(/usr/bin/curl -s -w "%{http_code}" -X GET "${jssURL}api/v1/mobile-device-groups/static-groups?page=0&page-size=100&sort=groupId%3Aasc&filter=groupName%3D%3D%22${encodedGroupName}%22" -H "Authorization: Bearer ${apiToken}" -o /dev/null)
-  if [ "${compGrpReadResult}" = "200" ] || [ "${mobDevGrpReadResult}" = "200" ]; then
+  # mobDevGrpReadResult=$(/usr/bin/curl -s -w "%{http_code}" -X GET "${jssURL}api/v1/mobile-device-groups/static-groups?page=0&page-size=100&sort=groupId%3Aasc&filter=groupName%3D%3D%22${encodedGroupName}%22" -H "Authorization: Bearer ${apiToken}" -o /dev/null)
+  mobDevGrpReadResult=$(/usr/bin/curl -s -X GET "${jssURL}api/v1/mobile-device-groups/static-groups?page=0&page-size=100&sort=groupId%3Aasc&filter=groupName%3D%3D%22${encodedGroupName}%22" -H "Authorization: Bearer ${apiToken}" | /usr/bin/jq -r '.totalCount')
+  if [ "${compGrpReadResult}" = "200" ] || [ "${mobDevGrpReadResult}" -gt 0 ]; then
     statMsg "ERROR: Pre-existing groups already exist. Please re-run with --cleanup or choose a different group name" ""
     exit 1
   fi
