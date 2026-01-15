@@ -4,7 +4,7 @@
 # pi102825_group_creater.sh - script to create static groups of devices for PI102825
 # https://github.com/gimmickyboot/PI102825GroupCreater-jamf
 #
-# v1.3.1 (13/01/2026)
+# v1.3.2 (14/01/2026)
 ###################
 ## uncomment the next line to output debugging to stdout
 #set -x
@@ -47,6 +47,21 @@ apiRead() {
   fi
   /usr/bin/curl -s -X GET "${jssURL}${1}" -H "Accept: application/${acceptType}" -H "Authorization: Bearer ${apiToken}"
 
+}
+
+apiPost() {
+  # $1 = endpoint, ie JSSResource/mobiledevices/id/0 or api/v3/computers-inventory
+  # $2 = data
+  # $3 = contentType, ie json or xml, xml is default
+  # usage: apiPost "JSSResource/computergroups/id/0" "<some data>" [ "json" ]
+
+  if [ $# -eq 2 ]; then
+    contentType="xml"
+  else
+    contentType="$3"
+  fi
+
+  /usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}${1}" -H "Content-Type: application/${contentType}" -H "Authorization: Bearer ${apiToken}" -d "${2}"
 }
 
 apiDelete() {
@@ -498,7 +513,8 @@ EOF
 EOF
 
   statMsg "Adding Computer group ${theGroupName} ${grpNum}" ""
-  responseCreate=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}JSSResource/computergroups/id/0" -H "Content-Type: application/xml" -H "Authorization: Bearer ${apiToken}" --data "$(cat "${FILEOUT}")")
+  # responseCreate=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}JSSResource/computergroups/id/0" -H "Content-Type: application/xml" -H "Authorization: Bearer ${apiToken}" --data "$(cat "${FILEOUT}")")
+  responseCreate=$(apiPost "JSSResource/computergroups/id/0" "$(cat "${FILEOUT}")")
   responseCode=$(/bin/echo "${responseCreate}" | /usr/bin/tail -n 1)
   case "${responseCode}" in
     200|201)
@@ -558,7 +574,8 @@ EOF
 EOF
 
   statMsg "Adding Mobile Device group ${theGroupName} ${grpNum}" ""
-  responseCreate=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}api/v1/mobile-device-groups/static-groups?platform=false" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" --data "$(cat "${FILEOUT}")")
+  # responseCreate=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}api/v1/mobile-device-groups/static-groups?platform=false" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" --data "$(cat "${FILEOUT}")")
+  responseCreate=$(apiPost "api/v1/mobile-device-groups/static-groups?platform=false" "$(cat "${FILEOUT}")" "json")
   responseCode=$(/bin/echo "${responseCreate}" | /usr/bin/tail -n 1)
   case "${responseCode}" in
     200|201)
