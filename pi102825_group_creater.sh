@@ -4,7 +4,7 @@
 # pi102825_group_creater.sh - script to create static groups of devices for PI102825
 # https://github.com/gimmickyboot/PI102825GroupCreater-jamf
 #
-# v1.3.2 (14/01/2026)
+# v1.4 (14/07/2026)
 ###################
 ## uncomment the next line to output debugging to stdout
 #set -x
@@ -28,10 +28,10 @@ statMsg() {
 
   if [ $# -gt 1 ]; then
     # send message to stdout
-    /bin/echo "$1"
+    printf '%s\n' "$1"
   fi
   
-  /bin/echo "$(/bin/date "+%Y-%m-%d %H:%M:%S"): $1" >> "${logFile}"
+  printf '%s\n' "$(/bin/date "+%Y-%m-%d %H:%M:%S"): $1" >> "${logFile}"
 
 }
 
@@ -45,7 +45,7 @@ apiRead() {
   else
     acceptType="$2"
   fi
-  /usr/bin/curl -s -X GET "${jssURL}${1}" -H "Accept: application/${acceptType}" -H "Authorization: Bearer ${apiToken}"
+  /usr/bin/curl -b "${stickySess}" -s -X GET "${jssURL}${1}" -H "Accept: application/${acceptType}" -H "Authorization: Bearer ${apiToken}"
 
 }
 
@@ -61,7 +61,7 @@ apiPost() {
     contentType="$3"
   fi
 
-  /usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}${1}" -H "Content-Type: application/${contentType}" -H "Authorization: Bearer ${apiToken}" -d "${2}"
+  /usr/bin/curl -b "${stickySess}" -s -w "\n%{http_code}" -X POST "${jssURL}${1}" -H "Content-Type: application/${contentType}" -H "Authorization: Bearer ${apiToken}" -d "${2}"
 }
 
 apiDelete() {
@@ -75,7 +75,7 @@ apiDelete() {
     acceptType="$2"
   fi
 
-  /usr/bin/curl -s -X DELETE "${jssURL}${1}" -H "Accept: application/${acceptType}" -H "Authorization: Bearer ${apiToken}"
+  /usr/bin/curl -b "${stickySess}" -s -X DELETE "${jssURL}${1}" -H "Accept: application/${acceptType}" -H "Authorization: Bearer ${apiToken}"
 
 }
 
@@ -85,10 +85,10 @@ processTokenExpiry() {
   # usage: processTokenExpiry
   
   if [ "${apiUsername}" ]; then
-    apiTokenExpiresLongUTC=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .expires | /usr/bin/awk -F . '{ print $1 }')
+    apiTokenExpiresLongUTC=$(printf '%s' "${authTokenJson}" | /usr/bin/jq -r .expires | /usr/bin/awk -F . '{ print $1 }')
     apiTokenExpiresEpochUTC=$(/bin/date -u -j -f "%Y-%m-%dT%T" "${apiTokenExpiresLongUTC}" +"%s")
   else
-    apiTokenExpiresInSec=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .expires_in)
+    apiTokenExpiresInSec=$(printf '%s' "${authTokenJson}" | /usr/bin/jq -r .expires_in)
     epochNowUTC=$(/bin/date -u '+%s')
     apiTokenExpiresEpochUTC=$((apiTokenExpiresInSec+epochNowUTC-15))
   fi
@@ -100,14 +100,14 @@ renewToken(){
   # usage: renewToken
 
   if [ "${apiUsername}" ] && [ "${epochDiff}" -le 0 ]; then
-    authTokenJson=$(/usr/bin/curl -s "${jssURL}api/v1/auth/token" -X POST -H "Authorization: Basic ${baseCreds}")
-    apiToken=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .token)
+    authTokenJson=$(/usr/bin/curl -b "${stickySess}" -s "${jssURL}api/v1/auth/token" -X POST -H "Authorization: Basic ${baseCreds}")
+    apiToken=$(printf '%s' "${authTokenJson}" | /usr/bin/jq -r .token)
   elif  [ "${apiUsername}" ] && [ "${epochDiff}" -le 30 ]; then
-    authTokenJson=$(/usr/bin/curl -s -X POST "${jssURL}api/v1/auth/keep-alive" -H "Authorization: Bearer ${apiToken}")
-    apiToken=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .token)
+    authTokenJson=$(/usr/bin/curl -b "${stickySess}" -s -X POST "${jssURL}api/v1/auth/keep-alive" -H "Authorization: Bearer ${apiToken}")
+    apiToken=$(printf '%s' "${authTokenJson}" | /usr/bin/jq -r .token)
   else
-    authTokenJson=$(/usr/bin/curl -s "${jssURL}api/oauth/token" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "client_id=${clientID}" --data-urlencode "grant_type=client_credentials" --data-urlencode "client_secret=${clientSecret}")
-    apiToken=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .access_token)
+    authTokenJson=$(/usr/bin/curl -b "${stickySess}" -s "${jssURL}api/oauth/token" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "client_id=${clientID}" --data-urlencode "grant_type=client_credentials" --data-urlencode "client_secret=${clientSecret}")
+    apiToken=$(printf '%s' "${authTokenJson}" | /usr/bin/jq -r .access_token)
   fi
 
   # process the token's expiry
@@ -139,7 +139,7 @@ destroyToken() {
 
   if [ ! "${premExit}" ]; then
     statMsg "Destroying the token"
-    responseCode=$(/usr/bin/curl -w "%{http_code}" -s -X POST "${jssURL}api/v1/auth/invalidate-token" -o /dev/null -H "Authorization: Bearer ${apiToken}")
+    responseCode=$(/usr/bin/curl -b "${stickySess}" -w "%{http_code}" -s -X POST "${jssURL}api/v1/auth/invalidate-token" -o /dev/null -H "Authorization: Bearer ${apiToken}")
     case "${responseCode}" in
       204)
         statMsg "Token has been destroyed"
@@ -202,14 +202,14 @@ while [ "$#" -gt 0 ]; do
 
       http://*|https://*)
           if [ -n "${jssURL}" ]; then
-              echo "Error: URL specified more than once" >&2
+              printf '%s\n' "Error: URL specified more than once" >&2
               usage
           fi
           jssURL=$1
           ;;
 
       *)
-          echo "Unknown argument: $1" >&2
+          printf '%s\n' "Unknown argument: $1" >&2
           usage
           ;;
   esac
@@ -222,24 +222,23 @@ if [ ! "${jssURL}" ]; then
   jssURL=$(/usr/libexec/PlistBuddy -c "Print :jss_url" /Library/Preferences/com.jamfsoftware.jamf.plist)
 fi
 until /usr/bin/curl --connect-timeout 5 -s "${jssURL}"; do
-  /bin/echo ""
+  printf '\n'
   statMsg "jssURL is invalid or none found on this Mac" ""
-  /bin/echo ""
-  printf "Enter a JSS URL, eg https://jss.jamfcloud.com:8443/ (leave blank to exit): "
+  printf '\n%s' "Enter a JSS URL, eg https://jss.jamfcloud.com:8443/ (leave blank to exit): "
   unset jssURL
   read -r jssURL
   if [ ! "${jssURL}" ]; then
-    /bin/echo ""
+    printf '\n'
     premExit=1
     exit 0
   fi
 done
 
 # make sure we have a trailing /
-lastChar=$(/bin/echo "${jssURL}" | rev | /usr/bin/cut -c 1 -)
+lastChar=$(printf '%s' "${jssURL}" | rev | /usr/bin/cut -c 1 -)
 case "${lastChar}" in
   "/")
-    /bin/echo "GOOD" >/dev/null 2>&1
+    printf '%s\n' "GOOD" >/dev/null 2>&1
     ;;
 
   *)
@@ -247,15 +246,18 @@ case "${lastChar}" in
     ;;
 esac
 
-/bin/echo ""
+printf '\n'
 statMsg "jssURL ${jssURL} is valid. Continuing" ""
 
+statMsg "Getting the sticky session"
+# https://developer.jamf.com/jamf-pro/docs/sticky-sessions-for-jamf-cloud
+stickySess=$(/usr/bin/curl -s --head "${jssURL}" |  /usr/bin/grep -i "^set-cookie" |  /usr/bin/grep -E "APBALANCED|jpro-ingress" |  /usr/bin/awk '{print $2}' |  /usr/bin/sed 's/.$//')
+
 while : ; do
-  /bin/echo ""
-  printf "Choose the type of authentication, Username/password (U or u) or API roles and clients (R or r) (leave blank to exit): "
+  printf '\n%s' "Choose the type of authentication, Username/password (U or u) or API roles and clients (R or r) (leave blank to exit): "
   read -r authChoice
   if [ ! "${authChoice}" ]; then
-    /bin/echo ""
+    printf '\n'
     premExit=1
     exit 0
   fi
@@ -264,25 +266,24 @@ while : ; do
     U|u)
       # get user creds and token
       while : ; do
-        /bin/echo ""
-        printf "Enter your API username (leave blank to exit): "
+        statMsg "Username/password has been chosen for authentication"
+        printf '\n%s' "Enter your API username (leave blank to exit): "
         read -r apiUsername
         if [ ! "${apiUsername}" ]; then
-          /bin/echo ""
+          printf '\n'
           premExit=1
           exit 0
         fi
-        /bin/echo ""
-        printf "Enter your API password (no echo): "
+        printf '\n%s' "Enter your API password (no echo): "
         stty -echo
         read -r apiPassword
         stty echo
-        echo ""
+        printf '\n'
 
         baseCreds=$(printf "%s:%s" "${apiUsername}" "${apiPassword}" | /usr/bin/iconv -t ISO-8859-1 | /usr/bin/base64 -i -)
 
         # get the token
-        authTokenRAW=$(/usr/bin/curl -s -w "%{http_code}" "${jssURL}api/v1/auth/token" -X POST -H "Authorization: Basic ${baseCreds}")
+        authTokenRAW=$(/usr/bin/curl -b "${stickySess}" -s -w "%{http_code}" "${jssURL}api/v1/auth/token" -X POST -H "Authorization: Basic ${baseCreds}")
         authTokenJson=$(printf '%s' "${authTokenRAW}" | /usr/bin/sed -e '$s/...$//' )
         httpCode=$(printf '%s' "${authTokenRAW}" | /usr/bin/tail -c 3)
         case "${httpCode}" in
@@ -291,7 +292,7 @@ while : ; do
             statMsg "Token created successfully"
 
             # strip out the token
-            apiToken=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .token)
+            apiToken=$(printf '%s' "${authTokenJson}" | /usr/bin/jq -r .token)
 
             # process the token's expiry
             processTokenExpiry
@@ -311,34 +312,34 @@ while : ; do
       ;;
 
     R|r)
+      statMsg "Username/password has been chosen for authentication"
       statMsg "API roles and clients has been chosen" ""
-      /bin/echo ""
+      printf '\n'
       while : ; do
-        echo ""
-        printf "Enter your client id (leave blank to exit): "
+        printf '\n%s' "Enter your client id (leave blank to exit): "
         read -r clientID
         if [ ! "${clientID}" ]; then
-          /bin/echo ""
+          printf '\n'
           premExit=1
           exit 0
         fi
 
-        /bin/echo ""
+        printf '\n%s' "Enter your client id (leave blank to exit): "
         printf "Enter your client secret (no echo): "
         stty -echo
         read -r clientSecret
         stty echo
 
-        authTokenRAW=$(/usr/bin/curl -s -w "%{http_code}" "${jssURL}api/oauth/token" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "client_id=${clientID}" --data-urlencode "grant_type=client_credentials" --data-urlencode "client_secret=${clientSecret}")
+        authTokenRAW=$(/usr/bin/curl -b "${stickySess}" -s -w "%{http_code}" "${jssURL}api/oauth/token" -H "Content-Type: application/x-www-form-urlencoded" --data-urlencode "client_id=${clientID}" --data-urlencode "grant_type=client_credentials" --data-urlencode "client_secret=${clientSecret}")
         authTokenJson=$(printf '%s' "${authTokenRAW}" | /usr/bin/sed -e '$s/...$//' )
         httpCode=$(printf '%s' "${authTokenRAW}" | /usr/bin/tail -c 3)
         case "${httpCode}" in
           200)
-            /bin/echo ""
-            /bin/echo "Token created successfully"
+            printf '%s\n'
+            printf '%s\n' "Token created successfully"
 
             # strip out the token
-            apiToken=$(/bin/echo "${authTokenJson}" | /usr/bin/jq -r .access_token)
+            apiToken=$(printf '%s' "${authTokenJson}" | /usr/bin/jq -r .access_token)
             processTokenExpiry
 
             # unset clientSecret
@@ -357,8 +358,7 @@ while : ; do
       ;;
 
        *)
-        /bin/echo ""
-        /bin/echo "Unknown choice. Please try again. Leave blank to exit."
+        printf '\n%s' "Unknown choice. Please try again. Leave blank to exit."
         ;;
       esac
 done
@@ -366,7 +366,7 @@ done
 # create the missing MDM profile EA for monitoring
 statMsg "Creating the monitoring EA"
 # shellcheck disable=SC2016
-responseEA=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}api/v1/computer-extension-attributes" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" \
+responseEA=$(/usr/bin/curl -b "${stickySess}" -s -w "\n%{http_code}" -X POST "${jssURL}api/v1/computer-extension-attributes" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" \
   -d '{
   "name": "PI102825 - No MDM Profile",
   "description": "Monitoring EA for PI102825",
@@ -380,18 +380,15 @@ responseEA=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}api/v1/compu
   "enabled": true,
   "manageExistingData": null
 }')
-responseCode=$(/bin/echo "${responseEA}" | /usr/bin/tail -n 1)
+responseCode=$(printf '%s' "${responseEA}" | /usr/bin/tail -n 1)
 case "${responseCode}" in
   201)
     statMsg "Successfully created the EA \"PI102825 - No MDM Profile\""
     ;;
 
   *)
-    # if [ "$(/bin/echo "${responseEA}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].code')" = "DUPLICATE_FIELD" ]; then
       statMsg "EA already exists."
-    # else
-      statMsg "$(/bin/echo "${responseEA}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].description')" ""
-    # fi
+      statMsg "$(printf '%s' "${responseEA}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].description')" ""
     ;;
 esac
 
@@ -399,7 +396,7 @@ sleep 1
 
 # create the smart group for the EA
 statMsg "Creating the smart group for EA monitoring"
-responseSM=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}api/v2/computer-groups/smart-groups" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" \
+responseSM=$(/usr/bin/curl -b "${stickySess}" -s -w "\n%{http_code}" -X POST "${jssURL}api/v2/computer-groups/smart-groups" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" \
   -d '{
   "name": "PI102825 - No MDM Profile",
   "description": "Monitoring for PI102825",
@@ -423,11 +420,7 @@ case "${responseCode}" in
     ;;
 
   *)
-    # if [ "$(/bin/echo "${responseSM}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].code')" = "DUPLICATE_FIELD" ]; then
-      # statMsg "Computer Smart Group already exists."
-    # else
-      statMsg "$(/bin/echo "${responseSM}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].description')" ""
-    # fi
+    statMsg "$(/bin/echo "${responseSM}" | /usr/bin/sed '$d' | /usr/bin/jq -r '.errors[].description')" ""
     ;;
 esac
 
@@ -467,19 +460,19 @@ if [ "${CLEANUP}" = "true" ]; then
   totalMobDevDeleted=$((grpNum-1))
 else
   encodedGroupName=$(printf '%s' "${theGroupName} 1" | /usr/bin/xxd -p | /usr/bin/sed 's/\(..\)/%\1/g' | /usr/bin/tr -d '\n')
-  compGrpReadResult=$(/usr/bin/curl -s -w "%{http_code}" -X GET "${jssURL}JSSResource/computergroups/name/${encodedGroupName}" -H "Authorization: Bearer ${apiToken}" -o /dev/null)
+  compGrpReadResult=$(/usr/bin/curl -b "${stickySess}" -s -w "%{http_code}" -X GET "${jssURL}JSSResource/computergroups/name/${encodedGroupName}" -H "Authorization: Bearer ${apiToken}" -o /dev/null)
   # mobDevGrpReadResult=$(/usr/bin/curl -s -w "%{http_code}" -X GET "${jssURL}api/v1/mobile-device-groups/static-groups?page=0&page-size=100&sort=groupId%3Aasc&filter=groupName%3D%3D%22${encodedGroupName}%22" -H "Authorization: Bearer ${apiToken}" -o /dev/null)
-  mobDevGrpReadResult=$(/usr/bin/curl -s -X GET "${jssURL}api/v1/mobile-device-groups/static-groups?page=0&page-size=100&sort=groupId%3Aasc&filter=groupName%3D%3D%22${encodedGroupName}%22" -H "Authorization: Bearer ${apiToken}" | /usr/bin/jq -r '.totalCount')
+  mobDevGrpReadResult=$(/usr/bin/curl -b "${stickySess}" -s -X GET "${jssURL}api/v1/mobile-device-groups/static-groups?page=0&page-size=100&sort=groupId%3Aasc&filter=groupName%3D%3D%22${encodedGroupName}%22" -H "Authorization: Bearer ${apiToken}" | /usr/bin/jq -r '.totalCount')
   if [ "${compGrpReadResult}" = "200" ] || [ "${mobDevGrpReadResult}" -gt 0 ]; then
     statMsg "ERROR: Pre-existing groups already exist. Please re-run with --cleanup or choose a different group name" ""
     exit 1
   fi
 fi
 
-if [ "${totalCompDeleted}" ] || [ "${totalMobDevDeleted}" ]; then
-  # sleep here while we wait for the d/b to catch up
-  sleep 15
-fi
+# if [ "${totalCompDeleted}" ] || [ "${totalMobDevDeleted}" ]; then
+#   # sleep here while we wait for the d/b to catch up
+#   sleep 15
+# fi
 
 checkToken
 
@@ -513,7 +506,7 @@ EOF
 EOF
 
   statMsg "Adding Computer group ${theGroupName} ${grpNum}" ""
-  # responseCreate=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}JSSResource/computergroups/id/0" -H "Content-Type: application/xml" -H "Authorization: Bearer ${apiToken}" --data "$(cat "${FILEOUT}")")
+  # responseCreate=$(/usr/bin/curl -b "${stickySess}" -s -w "\n%{http_code}" -X POST "${jssURL}JSSResource/computergroups/id/0" -H "Content-Type: application/xml" -H "Authorization: Bearer ${apiToken}" --data "$(cat "${FILEOUT}")")
   responseCreate=$(apiPost "JSSResource/computergroups/id/0" "$(cat "${FILEOUT}")")
   responseCode=$(/bin/echo "${responseCreate}" | /usr/bin/tail -n 1)
   case "${responseCode}" in
@@ -574,7 +567,6 @@ EOF
 EOF
 
   statMsg "Adding Mobile Device group ${theGroupName} ${grpNum}" ""
-  # responseCreate=$(/usr/bin/curl -s -w "\n%{http_code}" -X POST "${jssURL}api/v1/mobile-device-groups/static-groups?platform=false" -H "Authorization: Bearer ${apiToken}" -H "Content-Type: application/json" --data "$(cat "${FILEOUT}")")
   responseCreate=$(apiPost "api/v1/mobile-device-groups/static-groups?platform=false" "$(cat "${FILEOUT}")" "json")
   responseCode=$(/bin/echo "${responseCreate}" | /usr/bin/tail -n 1)
   case "${responseCode}" in
